@@ -1,0 +1,12 @@
+region = "us-east-1"
+administrator_password = "testtest"
+windows_instance = true
+os_identifier = "myami24"
+instance_type = "t2.micro"
+subnet_id = "subnet-085f044940a352abe"
+instace_count = "2"
+security_group = "sg-0801a58d72ed7202f"
+iam_instance_profile = "CodeDeployDemo-EC2-Instance-Profile"
+volume_size = "40"
+volume_type = "standard"
+delete_on_termination = "false"
