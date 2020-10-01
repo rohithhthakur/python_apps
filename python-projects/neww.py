@@ -9,14 +9,27 @@ for i in env_var_list:
        sys.exit(1)
 jira_username, jira_password = os.environ['JIRA_USERNAME'], os.environ['JIRA_PASSWORD']
 
-
-def create_jira(jira_url, jira_username, jira_password, jira_project, jira_epic_id, jira_data):
+def jira_login(jira_url, jira_username, jira_password):
     jira = JIRA(jira_url, auth=(jira_username, jira_password))
+    return jira
+
+
+def create_jira(jira, jira_project, jira_epic_id, jira_data):
     project = jira.project(jira_project)
     issue = jira.create_issue( fields = jira_data )
     print("%s is Created" % (issue.key))
     jira.add_issues_to_epic(jira_epic_id, [ issue.key ])
 
+def find_all_issues_of_epic(jira, jira_project, jira_epic_id):
+    all = jira.search_issues("'Epic Link' = "+jira_epic_id+" and project = '"+jira_project+"'", maxResults=False)
+    all_issues = {}
+    for i in all:
+        if i.fields.status.name.upper() == 'CLOSED': continue
+        if all_issues.get(i.fields.summary):
+            all_issues[i.fields.summary].append({i.key : i.fields.description})
+        else:
+            all_issues[i.fields.summary] = [{i.key : i.fields.description}]
+    return all_issues
 
 parser = argparse.ArgumentParser(description="Python script to parse AMI csv")
 parser.add_argument('-i', '--input_csv', help='Input CSV File Name', type=str, required=True)
@@ -27,6 +40,13 @@ parser.add_argument('-p', '--jira_project', help='JIRA Project, e.g. CYBRIP', ty
 parser.add_argument('-e', '--jira_epic_id', help='JIRA Epic ID, e.g. CYBRIP-1234', type=str, required=True)
 args = parser.parse_args()
 
+try: jira = jira_login(jira_url=args.jira_url, jira_username=jira_username, jira_password=jira_password)
+except:
+    print("ERROR: Unable to login to JIRA server")
+    sys.exit(1)
+
+
+all_issues = find_all_issues_of_epic(jira=jira, jira_project=args.jira_project, jira_epic_id=args.jira_epic_id)
 
 file_exists = os.path.isfile(args.input_csv)
 if not file_exists:
@@ -36,7 +56,6 @@ headers_in_output = "Account,environment,Region,InstanceId,ASV,BA,CMDBEnvironmen
 headers_in_output = headers_in_output.split(',')
 headers_index = []
 
-#my_dict = {'chalgapp':'ChallengeApp', 'deflapp':'DeflectionApp', 'enr'}
 my_dict = {'esic': 'ESIC', 'recovery': 'Recovery', 'forgots': 'Forgots', 'enrllapp': 'Enrollment', 'chalgapp': 'ChallengeApp', 'fraudfix': 'Fraudfix', 'sic': 'Sic', 'epciscic': 'epciscic', 'oigw': 'OIGW', 'deflapp': 'DeflectionApp', 'swiftid': 'SwitftId'}
 with open(args.input_csv) as csvfile:
     file = csv.reader(csvfile)
@@ -68,6 +87,7 @@ with open(args.input_csv) as csvfile:
     writer = csv.writer(outfile)
     writer.writerow(headers_in_output)
     jira_data_all = {}
+    tickets_to_update = {}
     for line in file:
         try: 
             days = int(line[Ami_index].strip())
@@ -94,7 +114,7 @@ with open(args.input_csv) as csvfile:
                 row.append(app_name)
                 row.append(lob)
                 writer.writerow(row)
-                summary = "%s-%s-Rehydration" % (lob.upper(), a_name.upper())
+                summary = "%s-%s-%s-Rehydration" % (lob.upper(), a_name.upper(), app_name.upper())
                 rec_table = """
 ||Attribute||Value||
 |Instance Id|%s|
@@ -102,17 +122,37 @@ with open(args.input_csv) as csvfile:
 |AMI Days|%s|
 |Target End date|%s
 """ % (instance_id, instance_name, days, end_date_55)
+                if all_issues.get(summary):
+                    already_in = False
+                    for t in all_issues[summary]:
+                        jira_desc = list(t.values())[0]
+                        if instance_id in jira_desc:
+                            already_in = True
+                    if not already_in:
+                        jira_id = list(all_issues[summary][0].keys())[0]
+                        jira_desc = list(all_issues[summary][0].values())[0]
+                        if tickets_to_update.get(jira_id):
+                            tickets_to_update[jira_id] = tickets_to_update[jira_id] + '\n\n' + rec_table
+                        else:      
+                            tickets_to_update[jira_id] = jira_desc + '\n\n' + rec_table
+                    continue
                 if jira_data_all.get(summary):
                     jira_data_all[summary].append(rec_table)
                 else:
                     jira_data_all[summary] = [rec_table]
         except ValueError: pass
 outfile.close()
+
+
 for k, v in jira_data_all.items():
     jira_data = { 'project': {'key': args.jira_project} }
     jira_data['summary'] = k
     jira_data['issuetype'] = { 'name': 'Story' }
     jira_data['priority'] = { 'name': 'P3'}
     jira_data['description'] = "*Rehydration Process* can be [found on Confluence.|http://example.com/]\n\n*Description:*\n\n%s" % ('\n\n'.join(v))
-    create_jira(jira_url=args.jira_url, jira_username=jira_username, jira_password=jira_password, jira_project=args.jira_project, jira_epic_id=args.jira_epic_id, jira_data=jira_data)
+    create_jira(jira=jira, jira_project=args.jira_project, jira_epic_id=args.jira_epic_id, jira_data=jira_data)
+
+for k, v in tickets_to_update.items():
+    issue = jira.issue(k)
+    issue.update(description=v)
 sys.exit(0)
